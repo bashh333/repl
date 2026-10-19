@@ -1,91 +1,181 @@
+import csv
 import os
-import readline
+import posixpath
+import shlex
 import sys
 
+# Именованные константы для CLI аргументов (защита от "магических чисел")
 MIN_ARGS_FOR_VFS = 1
 MIN_ARGS_FOR_SCRIPT = 2
 
 
-def do_command(user_input):
-    """Выполняет команду.
+class VirtualFileSystem:
+    """Виртуальная файловая система, загружаемая из CSV-образа."""
 
-    Возвращает True при успехе и False при ошибке/выходе.
-    """
-    expanded = os.path.expandvars(user_input)
-    parts = expanded.split()
+    def __init__(self, csv_path: str):
+        self.csv_path = csv_path
+        self.cwd = "/"
+        self.entries = {}  # {path: {"type": "dir"|"file", "content": "..."}}
+        self.load()
 
-    if not parts:
+    def load(self) -> None:
+        """Загрузка файловой системы из CSV в словарь в памяти."""
+        if not os.path.exists(self.csv_path):
+            raise FileNotFoundError(f"Файл VFS не найден: {self.csv_path}")
+
+        with open(self.csv_path, mode="r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                raw_path = row["path"].strip()
+                normalized_path = posixpath.normpath(raw_path)
+                if not normalized_path.startswith("/"):
+                    normalized_path = "/" + normalized_path
+
+                self.entries[normalized_path] = {
+                    "type": row["type"].strip(),
+                    "content": row.get("content", "")
+                }
+
+        # Корень всегда должен существовать
+        if "/" not in self.entries:
+            self.entries["/"] = {"type": "dir", "content": ""}
+
+    def resolve_path(self, target: str) -> str:
+        """Приведение относительного или абсолютного пути к каноническому виду."""
+        if target.startswith("/"):
+            resolved = posixpath.normpath(target)
+        else:
+            resolved = posixpath.normpath(posixpath.join(self.cwd, target))
+        return resolved
+
+    def list_dir(self, target: str = "") -> list[str]:
+        """Возвращает список элементов внутри каталога."""
+        path = self.resolve_path(target) if target else self.cwd
+
+        if path not in self.entries:
+            print(f"ls: cannot access '{target}': No such file or directory")
+            return []
+
+        if self.entries[path]["type"] != "dir":
+            print(f"ls: '{target}': Not a directory")
+            return []
+
+        items = set()
+        prefix = path.rstrip("/") + "/"
+
+        for entry_path in self.entries:
+            if entry_path == "/" or entry_path == path:
+                continue
+
+            if entry_path.startswith(prefix):
+                relative = entry_path[len(prefix):]
+                top_level_name = relative.split("/")[0]
+                if top_level_name:
+                    items.add(top_level_name)
+
+        return sorted(items)
+
+    def change_dir(self, target: str = "") -> bool:
+        """Смена текущего рабочего каталога (cd)."""
+        if not target or target == "~":
+            self.cwd = "/"
+            return True
+
+        new_path = self.resolve_path(target)
+
+        if new_path not in self.entries:
+            print(f"cd: no such file or directory: {target}")
+            return False
+
+        if self.entries[new_path]["type"] != "dir":
+            print(f"cd: not a directory: {target}")
+            return False
+
+        self.cwd = new_path
         return True
+
+
+def execute_command(cmd_line: str, vfs: VirtualFileSystem) -> bool:
+    """Выполнение одной команды. Возвращает False при ошибке скрипта или команде exit."""
+    expanded_line = os.path.expandvars(cmd_line.strip())
+    if not expanded_line or expanded_line.startswith("#"):
+        return True
+
+    try:
+        parts = shlex.split(expanded_line)
+    except ValueError as e:
+        print(f"shell: parse error: {e}")
+        return False
 
     cmd = parts[0]
     args = parts[1:]
 
     if cmd == "exit":
         return False
+
     elif cmd == "ls":
-        print(f"ls: {args}")
+        target = args[0] if args else ""
+        items = vfs.list_dir(target)
+        if items:
+            print("  ".join(items))
         return True
+
     elif cmd == "cd":
-        print(f"cd: {args}")
-        return True
+        target = args[0] if args else ""
+        return vfs.change_dir(target)
+
     elif cmd == "echo":
         print(" ".join(args))
         return True
+
     else:
-        print(f"Ошибка: {cmd}: command not found")
+        print(f"{cmd}: command not found")
         return False
 
 
-def run_script_file(script_path, vfs_name):
-    """Выполняет стартовый скрипт построчно."""
-    if not os.path.exists(script_path) or os.path.isdir(script_path):
-        print(f"Ошибка: скрипт '{script_path}' не найден!")
-        sys.exit(1)
+def run_script_file(script_path: str, vfs: VirtualFileSystem, vfs_name: str) -> bool:
+    """Пакетное выполнение стартового скрипта."""
+    if not os.path.exists(script_path):
+        print(f"Ошибка: файл скрипта '{script_path}' не найден.")
+        return False
 
     with open(script_path, "r", encoding="utf-8") as f:
         for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
+            clean_line = line.strip()
+            if not clean_line or clean_line.startswith("#"):
                 continue
 
-            print(f"[{vfs_name}]$ {line}")
-
-            status = do_command(line)
-            if not status:
-                print("Скрипт остановлен из-за ошибки!")
-                sys.exit(1)
+            print(f"[{vfs_name}:{vfs.cwd}]$ {clean_line}")
+            success = execute_command(clean_line, vfs)
+            if not success:
+                return False
+    return True
 
 
 def main():
-    """Точка входа эмулятора."""
-    has_vfs = len(sys.argv) > MIN_ARGS_FOR_VFS
-    has_script = len(sys.argv) > MIN_ARGS_FOR_SCRIPT
-
-    vfs_path = sys.argv[1] if has_vfs else "vfs.csv"
-    script_path = sys.argv[2] if has_script else None
+    vfs_path = sys.argv[1] if len(sys.argv) > MIN_ARGS_FOR_VFS else "vfs.csv"
+    script_path = sys.argv[2] if len(sys.argv) > MIN_ARGS_FOR_SCRIPT else None
     vfs_name = os.path.basename(vfs_path)
 
-    print("=== ПАРАМЕТРЫ ===")
-    print("VFS:", vfs_path)
-    print("Скрипт:", script_path)
-    print("=================")
+    try:
+        vfs = VirtualFileSystem(vfs_path)
+    except FileNotFoundError as err:
+        print(err)
+        sys.exit(1)
 
     if script_path:
-        run_script_file(script_path, vfs_name)
+        success = run_script_file(script_path, vfs, vfs_name)
+        if not success:
+            sys.exit(1)
 
     while True:
         try:
-            user_input = input(f"[{vfs_name}]$ ")
-            if not user_input.strip():
-                continue
-
-            if user_input.strip() == "exit":
+            prompt = f"[{vfs_name}:{vfs.cwd}]$ "
+            line = input(prompt)
+            if not execute_command(line, vfs):
                 break
-
-            do_command(user_input)
-
-        except (EOFError, KeyboardInterrupt):
-            print("\nexit")
+        except (KeyboardInterrupt, EOFError):
+            print()
             break
 
 

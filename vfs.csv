@@ -1,0 +1,7 @@
+path,type,content
+/,dir,
+/home,dir,
+/home/user,dir,
+/home/user/notes.txt,file,Hello world!
+/etc,dir,
+/etc/config.txt,file,server_port=8080
