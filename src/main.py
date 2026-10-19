@@ -1,25 +1,25 @@
 import csv
+import getpass
 import os
 import posixpath
 import shlex
 import sys
 
-# Именованные константы для CLI аргументов (защита от "магических чисел")
 MIN_ARGS_FOR_VFS = 1
 MIN_ARGS_FOR_SCRIPT = 2
 
 
 class VirtualFileSystem:
-    """Виртуальная файловая система, загружаемая из CSV-образа."""
+    """Виртуальная файловая система в оперативной памяти."""
 
     def __init__(self, csv_path: str):
         self.csv_path = csv_path
         self.cwd = "/"
-        self.entries = {}  # {path: {"type": "dir"|"file", "content": "..."}}
+        self.entries = {}
         self.load()
 
     def load(self) -> None:
-        """Загрузка файловой системы из CSV в словарь в памяти."""
+        """Загрузка файловой структуры из CSV-файла."""
         if not os.path.exists(self.csv_path):
             raise FileNotFoundError(f"Файл VFS не найден: {self.csv_path}")
 
@@ -27,26 +27,22 @@ class VirtualFileSystem:
             reader = csv.DictReader(f)
             for row in reader:
                 raw_path = row["path"].strip()
-                normalized_path = posixpath.normpath(raw_path)
-                if not normalized_path.startswith("/"):
-                    normalized_path = "/" + normalized_path
-
-                self.entries[normalized_path] = {
+                normalized = posixpath.normpath(raw_path)
+                if not normalized.startswith("/"):
+                    normalized = "/" + normalized
+                self.entries[normalized] = {
                     "type": row["type"].strip(),
                     "content": row.get("content", "")
                 }
 
-        # Корень всегда должен существовать
         if "/" not in self.entries:
             self.entries["/"] = {"type": "dir", "content": ""}
 
     def resolve_path(self, target: str) -> str:
-        """Приведение относительного или абсолютного пути к каноническому виду."""
+        """Вычисление нормализованного абсолютного пути."""
         if target.startswith("/"):
-            resolved = posixpath.normpath(target)
-        else:
-            resolved = posixpath.normpath(posixpath.join(self.cwd, target))
-        return resolved
+            return posixpath.normpath(target)
+        return posixpath.normpath(posixpath.join(self.cwd, target))
 
     def list_dir(self, target: str = "") -> list[str]:
         """Возвращает список элементов внутри каталога."""
@@ -62,27 +58,23 @@ class VirtualFileSystem:
 
         items = set()
         prefix = path.rstrip("/") + "/"
-
         for entry_path in self.entries:
-            if entry_path == "/" or entry_path == path:
+            if entry_path in ("/", path):
                 continue
-
             if entry_path.startswith(prefix):
                 relative = entry_path[len(prefix):]
-                top_level_name = relative.split("/")[0]
-                if top_level_name:
-                    items.add(top_level_name)
-
+                top_name = relative.split("/")[0]
+                if top_name:
+                    items.add(top_name)
         return sorted(items)
 
     def change_dir(self, target: str = "") -> bool:
-        """Смена текущего рабочего каталога (cd)."""
+        """Переход в указанную директорию."""
         if not target or target == "~":
             self.cwd = "/"
             return True
 
         new_path = self.resolve_path(target)
-
         if new_path not in self.entries:
             print(f"cd: no such file or directory: {target}")
             return False
@@ -96,15 +88,15 @@ class VirtualFileSystem:
 
 
 def execute_command(cmd_line: str, vfs: VirtualFileSystem) -> bool:
-    """Выполнение одной команды. Возвращает False при ошибке скрипта или команде exit."""
+    """Выполнение одной команды оболочки."""
     expanded_line = os.path.expandvars(cmd_line.strip())
     if not expanded_line or expanded_line.startswith("#"):
         return True
 
     try:
         parts = shlex.split(expanded_line)
-    except ValueError as e:
-        print(f"shell: parse error: {e}")
+    except ValueError as err:
+        print(f"shell: parse error: {err}")
         return False
 
     cmd = parts[0]
@@ -112,29 +104,32 @@ def execute_command(cmd_line: str, vfs: VirtualFileSystem) -> bool:
 
     if cmd == "exit":
         return False
-
     elif cmd == "ls":
         target = args[0] if args else ""
         items = vfs.list_dir(target)
         if items:
             print("  ".join(items))
         return True
-
     elif cmd == "cd":
         target = args[0] if args else ""
         return vfs.change_dir(target)
-
     elif cmd == "echo":
         print(" ".join(args))
         return True
-
+    elif cmd == "whoami":
+        print(getpass.getuser())
+        return True
+    elif cmd == "clear":
+        print("\033[H\033[J", end="")
+        return True
     else:
         print(f"{cmd}: command not found")
         return False
 
 
-def run_script_file(script_path: str, vfs: VirtualFileSystem, vfs_name: str) -> bool:
-    """Пакетное выполнение стартового скрипта."""
+def run_script_file(script_path: str, vfs: VirtualFileSystem,
+                    vfs_name: str) -> bool:
+    """Пакетное выполнение команд из файла скрипта."""
     if not os.path.exists(script_path):
         print(f"Ошибка: файл скрипта '{script_path}' не найден.")
         return False
@@ -144,17 +139,17 @@ def run_script_file(script_path: str, vfs: VirtualFileSystem, vfs_name: str) -> 
             clean_line = line.strip()
             if not clean_line or clean_line.startswith("#"):
                 continue
-
             print(f"[{vfs_name}:{vfs.cwd}]$ {clean_line}")
-            success = execute_command(clean_line, vfs)
-            if not success:
+            if not execute_command(clean_line, vfs):
                 return False
     return True
 
 
 def main():
+    """Точка входа эмулятора."""
     vfs_path = sys.argv[1] if len(sys.argv) > MIN_ARGS_FOR_VFS else "vfs.csv"
-    script_path = sys.argv[2] if len(sys.argv) > MIN_ARGS_FOR_SCRIPT else None
+    script_path = (sys.argv[2]
+                   if len(sys.argv) > MIN_ARGS_FOR_SCRIPT else None)
     vfs_name = os.path.basename(vfs_path)
 
     try:
@@ -164,8 +159,7 @@ def main():
         sys.exit(1)
 
     if script_path:
-        success = run_script_file(script_path, vfs, vfs_name)
-        if not success:
+        if not run_script_file(script_path, vfs, vfs_name):
             sys.exit(1)
 
     while True:
