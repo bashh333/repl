@@ -9,6 +9,10 @@ import sys
 
 MIN_ARGS_FOR_VFS = 1
 MIN_ARGS_FOR_SCRIPT = 2
+
+
+class ExitRequested(Exception):
+    """Сигнал о завершении оболочки командой exit."""
 MIN_ARGS_FOR_TOUCH = 1
 MIN_ARGS_FOR_MV = 2
 MIN_ARGS_FOR_LOAD = 1
@@ -183,7 +187,7 @@ def dispatch_command(cmd: str, args: list[str],
                      vfs: VirtualFileSystem) -> bool:
     """Маршрутизация вызова команд эмулятора."""
     if cmd == "exit":
-        return False
+        raise ExitRequested
     if cmd == "ls":
         target = args[0] if len(args) >= MIN_ARGS_FOR_VFS else ""
         items = vfs.list_dir(target)
@@ -284,9 +288,8 @@ def main():
             vfs_name = os.path.basename(vfs.csv_path)
             prompt = f"[{vfs_name}:{vfs.cwd}]$ "
             line = input(prompt)
-            if not execute_command(line, vfs):
-                break
-        except (KeyboardInterrupt, EOFError):
+            execute_command(line, vfs)
+        except (ExitRequested, KeyboardInterrupt, EOFError):
             print()
             break
 
