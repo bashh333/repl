@@ -1,0 +1,5 @@
+path,type,content
+/,dir,
+/var,dir,
+/var/log,dir,
+/var/log/syslog,file,system active

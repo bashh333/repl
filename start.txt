@@ -1,15 +1,19 @@
-# Тестирование базовых команд
+# Проверка справки
+help
+# Проверка пользователя и эхо
 whoami
-echo Привет, $USER
-# Тестирование VFS
+echo Тестирование VFS этапа 5
+# Проверка touch и ls
+touch new_document.txt
 ls
+# Проверка mv (переименование)
+mv new_document.txt renamed.txt
+ls
+# Проверка навигации
 cd home
 ls
-cd user
+# Проверка загрузки альтернативного VFS
+vfs-load vfs_alt.csv
 ls
-# Тестирование возврата и корня
-cd ..
-cd /etc
+cd var/log
 ls
-# Проверка очистки экрана
-clear
